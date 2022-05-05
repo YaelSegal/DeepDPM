@@ -4,6 +4,7 @@
 # Copyright (c) 2022 Meitar Ronen
 #
 
+
 import torch
 import torch.nn as nn
 from torch.distributions.multivariate_normal import MultivariateNormal
@@ -28,6 +29,7 @@ class training_utils:
         self.alt_count = 0
         self.last_performed = "merge"
         self.device = "cuda" if torch.cuda.is_available() and hparams.gpus is not None else "cpu"
+        self.cross_entropy = nn.CrossEntropyLoss()
 
     @staticmethod
     def change_model_requires_grad(model, require_grad_bool=True):
@@ -176,11 +178,11 @@ class training_utils:
         prior=None,
     ):
 
-        mus_sub, covs_sub, pi_sub = compute_mus_covs_pis_subclusters(
+        mus_sub, covs_sub, pi_sub, init_idx = compute_mus_covs_pis_subclusters(
             codes=codes, logits=train_resp, logits_sub=train_resp_sub,
             mus_sub=mus_sub, K=K, n_sub=n_sub, use_priors=self.hparams.use_priors, prior=prior
         )
-        return pi_sub, mus_sub, covs_sub
+        return pi_sub, mus_sub, covs_sub, init_idx
 
     def init_subcluster_params(
         self, train_resp, train_resp_sub, codes, K, n_sub, prior=None
@@ -390,6 +392,7 @@ class training_utils:
             return loss
 
         raise NotImplementedError("No such loss!")
+
 
     def comp_std(self, codes, hard_assignments, K):
         stds = []
