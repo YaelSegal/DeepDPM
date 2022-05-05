@@ -11,6 +11,13 @@ from torch.utils.data import TensorDataset
 from sklearn.preprocessing import MinMaxScaler, StandardScaler, Normalizer
 
 
+class IndexDataset(TensorDataset):
+
+    def __getitem__(self, index):
+        x, y = tuple(tensor[index] for tensor in self.tensors)
+        return x, y, index
+
+
 class embbededDataset:
 
     @property
@@ -32,7 +39,8 @@ class embbededDataset:
         train_codes = torch.Tensor(torch.load(os.path.join(self.dataset_loc, "train_codes.pt")))
         labels = torch.load(os.path.join(self.dataset_loc, "train_labels.pt"))
         
-        train_labels = torch.Tensor(labels).cpu().float()
+        # train_labels = torch.Tensor(labels).cpu().float()
+        train_labels = labels.cpu().float()
 
         if self.transform:
             if self.transform == "standard":
@@ -41,7 +49,7 @@ class embbededDataset:
                 train_codes = torch.Tensor(Normalizer().fit_transform(train_codes))
             elif self.transform == "min_max":
                 train_codes = torch.Tensor(MinMaxScaler().fit_transform(train_codes))
-        train_set = TensorDataset(train_codes, train_labels)
+        train_set = IndexDataset(train_codes, train_labels)
         del train_codes
         del train_labels
         return train_set
@@ -54,8 +62,8 @@ class embbededDataset:
             val_codes = data.tensors[0][5:]
             val_labels = data.tensors[1][5:]
         else:
-            val_codes = torch.Tensor(torch.load(os.path.join(self.dataset_loc, "val_codes.pt")))
-            val_labels = torch.Tensor(torch.load(os.path.join(self.dataset_loc, "val_labels.pt")).cpu().float())
+            val_codes = torch.load(os.path.join(self.dataset_loc, "val_codes.pt"))
+            val_labels = torch.load(os.path.join(self.dataset_loc, "val_labels.pt")).cpu().float()
         if self.transform:
             if self.transform == "normalize":
                 val_codes = torch.Tensor(Normalizer().fit_transform(val_codes))
@@ -63,7 +71,7 @@ class embbededDataset:
                 val_codes = torch.Tensor(MinMaxScaler().fit_transform(val_codes))
             elif self.transform == "standard":
                 val_codes = torch.Tensor(StandardScaler().fit_transform(val_codes))
-        test_set = TensorDataset(val_codes, val_labels)
+        test_set = IndexDataset(val_codes, val_labels)
         del val_codes
         del val_labels
         return test_set

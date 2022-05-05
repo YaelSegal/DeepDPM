@@ -28,6 +28,8 @@ from src.clustering_models.clusternet_modules.utils.clustering_utils.split_merge
     split_step,
     merge_step,
     update_models_parameters_merge,
+    update_models_parameters_delete,
+    delete_step,
 )
 from src.clustering_models.clusternet_modules.models.Classifiers import MLP_Classifier, Subclustering_net
 
@@ -54,6 +56,7 @@ class ClusterNetModel(pl.LightningModule):
         self.codes_dim = input_dim
         self.split_performed = False  # indicator to know whether a split was performed
         self.merge_performed = False
+        self.delete_performed = False
         self.feature_extractor = feature_extractor
         self.centers = centers
         if self.hparams.seed:
@@ -80,6 +83,9 @@ class ClusterNetModel(pl.LightningModule):
 
         self.mus_inds_to_merge = None
         self.mus_ind_to_split = None
+        self.mus_ind_to_delete = None
+        self.clusters_init = [0 for i in range (init_k)]
+        self.hierarchy_clustering= []
 
     def forward(self, x):
         if self.feature_extractor is not None:
@@ -103,9 +109,10 @@ class ClusterNetModel(pl.LightningModule):
         if self.split_performed or self.merge_performed:
             self.split_performed = False
             self.merge_performed = False
+            self.delete_performed = False
 
     def on_validation_epoch_start(self):
-        if self.split_performed or self.merge_performed:
+        if self.split_performed or self.merge_performed or self.delete_performed:
             self.update_params_split_merge()
         self.initialize_net_params(stage="val")
         return super().on_validation_epoch_start()
@@ -126,7 +133,7 @@ class ClusterNetModel(pl.LightningModule):
             self.val_gt = []
 
     def training_step(self, batch, batch_idx, optimizer_idx=0):
-        x, y = batch
+        x, y, indexes = batch
         if self.feature_extractor is not None:
             with torch.no_grad():
                 codes = torch.from_numpy(
@@ -258,7 +265,7 @@ class ClusterNetModel(pl.LightningModule):
             return None
 
     def validation_step(self, batch, batch_idx):
-        x, y = batch
+        x, y, indexes = batch
         if self.feature_extractor is not None:
             with torch.no_grad():
                 codes = torch.from_numpy(
@@ -409,6 +416,8 @@ class ClusterNetModel(pl.LightningModule):
                     )
 
         else:
+            split_decisions = []
+            mus_to_merge = []
             # add avg loss of all losses
             if not self.hparams.ignore_subclusters:
                 clus_losses, subclus_losses = outputs[0], outputs[1]
@@ -475,6 +484,7 @@ class ClusterNetModel(pl.LightningModule):
                     self.pi_sub,
                     self.mus_sub,
                     self.covs_sub,
+                    init_idx
                 ) = self.training_utils.comp_subcluster_params(
                     self.train_resp,
                     self.train_resp_sub,
@@ -486,6 +496,13 @@ class ClusterNetModel(pl.LightningModule):
                     self.pi_sub,
                     self.prior,
                 )
+                if self.hparams.perform_delete:           
+                    for idx in range(len(self.clusters_init)):
+                        if idx in init_idx:
+                            self.clusters_init[idx] +=1
+                        else:
+                            self.clusters_init[idx] = 0 
+
             if perform_split and not freeze_mus:
                 # perform splits
                 self.training_utils.last_performed = "split"
@@ -526,6 +543,17 @@ class ClusterNetModel(pl.LightningModule):
                     self.merge_performed = True
                     self.perform_merge(mus_to_merge, highest_ll_mus)
 
+            if self.hparams.perform_delete:           
+
+                mus_to_delete, clusters_init = delete_step( self.clusters_init, split_decisions, mus_to_merge, self.hparams.max_init )
+
+                if len(mus_to_delete) > 0 and not (self.merge_performed or self.split_performed):
+                    self.delete_performed = True
+                    self.perform_delete(mus_to_delete)
+                self.clusters_init = clusters_init
+                split_decisions = []
+                mus_to_merge = []
+
             # compute nmi, unique z, etc.
             if self.hparams.log_metrics_at_train:
                 self.log_clustering_metrics()
@@ -565,7 +593,7 @@ class ClusterNetModel(pl.LightningModule):
             )
             self.last_val_NMI = nmi
             self.log_clustering_metrics(stage="val")
-            if not (self.split_performed or self.merge_performed) and self.hparams.log_metrics_at_train:
+            if not (self.split_performed or self.merge_performed or self.delete_performed) and self.hparams.log_metrics_at_train:
                 self.log_clustering_metrics(stage="total")
 
         if self.hparams.log_emb == "every_n_epochs" and self.current_epoch % 10 == 0 and len(self.val_gt) > 10:
@@ -741,6 +769,71 @@ class ClusterNetModel(pl.LightningModule):
 
         self.cluster_net.class_fc2.to(self._device)
         self.mus_inds_to_merge = mus_lists_to_merge
+
+    def update_subcluster_nets_delete(self, delete_decisions):
+        # update the cluster net to have the new K
+        subclus_opt = self.optimizers()[self.optimizers_dict_idx["subcluster_net_opt"]]
+        
+        # remove old weights from the optimizer state
+        for p in self.subclustering_net.parameters():
+            subclus_opt.state.pop(p)
+        self.subclustering_net.update_K_delete(delete_decisions)        
+        subclus_opt.param_groups[0]["params"] = list(self.subclustering_net.parameters())
+
+    def perform_delete(self, mus_lists_to_delete):
+        """A method that performs delete of clusters' centers
+
+        Args:
+            mus_lists_to_delete (list): a list  contains  indices of mus that were chosen to be deleted.
+        """
+
+        print(f"Deleting clusters {mus_lists_to_delete}")
+        mus_lists_to_delete = torch.tensor(mus_lists_to_delete)
+        inds_to_mask = torch.zeros(self.K, dtype=bool)
+        inds_to_mask[mus_lists_to_delete] = 1
+        (
+            self.mus_new,
+            self.covs_new,
+            self.pi_new,
+            self.mus_sub_new,
+            self.covs_sub_new,
+            self.pi_sub_new,
+        ) = update_models_parameters_delete(
+            inds_to_mask,
+            self.mus,
+            self.covs,
+            self.pi,
+            self.mus_sub,
+            self.covs_sub,
+            self.pi_sub
+        )
+
+        # adjust k
+        self.K -= len(mus_lists_to_delete)
+
+        if not self.hparams.ignore_subclusters:
+            # update the subclustering net
+            # self.update_subcluster_nets_merge(inds_to_mask, mus_lists_to_merge, highest_ll_mus)
+            self.update_subcluster_nets_delete(inds_to_mask)
+
+        # update the cluster net to have the new K
+        if not self.hparams.ignore_subclusters:
+            clus_opt = self.optimizers()[self.optimizers_dict_idx["cluster_net_opt"]]
+        else:
+            # only one optimizer
+            clus_opt = self.optimizers()
+
+        # remove old weights from the optimizer state
+        for p in self.cluster_net.class_fc2.parameters():
+            clus_opt.state.pop(p)
+        
+        # update cluster net
+        self.cluster_net.update_K_delete( inds_to_mask)
+        # add parameters to the optimizer
+        clus_opt.param_groups[1]["params"] = list(self.cluster_net.class_fc2.parameters())
+
+        self.cluster_net.class_fc2.to(self._device)
+        self.mus_inds_to_delete = mus_lists_to_delete
 
     def configure_optimizers(self):
         # Get all params but last layer
@@ -937,7 +1030,7 @@ class ClusterNetModel(pl.LightningModule):
         self.log(f"cluster_net_train/{stage}/unique_z", unique_z, on_epoch=True, on_step=False)
 
         if self.hparams.offline and ((self.hparams.log_metrics_at_train and stage == "train") or ( not self.hparams.log_metrics_at_train and stage!="train")):
-            print(f"NMI : {gt_nmi}, ARI: {ari}, ACC: {acc}, current K: {unique_z}")
+            print(f"NMI : {gt_nmi}, ARI: {ari}, ACC: {acc}, current K: {unique_z}, Networks_k:{self.K}")
 
         if self.current_epoch in (0, 1, self.hparams.train_cluster_net - 1):
             alt_stage = "start" if self.current_epoch == 1 or self.hparams.train_cluster_net % self.current_epoch == 0 else "end"

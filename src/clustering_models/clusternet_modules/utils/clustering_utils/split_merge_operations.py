@@ -569,3 +569,85 @@ def merge_rule(mus, logits, codes, k_inds, alpha, cov_const, merge_prob, prior=N
         decisions.append(log_Hastings_ratio_merge(alpha, N_k_1, N_k_2, log_ll_k_1, log_ll_k_2, log_ll_k, merge_prob))
         highest_ll.append(k_inds[i: i + 2][int(log_ll_k_1 < log_ll_k_2)])
     return decisions, highest_ll
+
+
+def update_clusters_params_delete(
+    inds_to_mask,
+    mus,
+    covs,
+    pi
+):
+    mus_not_deleted = mus[torch.logical_not(inds_to_mask)]
+    covs_not_deleted = covs[torch.logical_not(inds_to_mask)]
+    pi_not_deleted = pi[torch.logical_not(inds_to_mask)]
+
+    mus_new = mus_not_deleted
+    covs_new = covs_not_deleted
+    pi_new = pi_not_deleted
+
+    return mus_new, covs_new, pi_new
+
+def update_subclusters_params_delete(
+    inds_to_mask, mus_sub, covs_sub, pi_sub
+):
+    # update sub_mus
+    mus_sub_not_deleted = mus_sub[torch.logical_not(inds_to_mask.repeat_interleave(2))]
+    covs_sub_not_deleted = covs_sub[torch.logical_not(inds_to_mask.repeat_interleave(2))]
+    pi_sub_not_deleted = pi_sub[torch.logical_not(inds_to_mask.repeat_interleave(2))]
+
+    mus_sub_new = mus_sub_not_deleted
+    covs_sub_new = covs_sub_not_deleted
+    pi_sub_new = pi_sub_not_deleted
+
+    return mus_sub_new, covs_sub_new, pi_sub_new
+
+def update_models_parameters_delete(
+    inds_to_mask,
+    mus,
+    covs,
+    pi,
+    mus_sub,
+    covs_sub,
+    pi_sub
+):
+    mus_new, covs_new, pi_new = update_clusters_params_delete(
+        inds_to_mask,
+        mus,
+        covs,
+        pi
+    )
+    mus_sub_new, covs_sub_new, pi_sub_new = update_subclusters_params_delete(
+         inds_to_mask, mus_sub, covs_sub, pi_sub)
+    return mus_new, covs_new, pi_new, mus_sub_new, covs_sub_new, pi_sub_new
+
+def delete_step(
+   clusters_init, split_decisions, merge_decisions, max_init
+):
+    ks_to_delete = []
+
+    if len(split_decisions) > 0:
+        # start new couting of init
+        for k in split_decisions:
+            if k:
+                clusters_init.append(0)
+    elif len(merge_decisions) > 0:
+        new_clusters_init = []
+        for idx in range(len(clusters_init)):
+            if not any(idx in sublist for sublist in merge_decisions):
+                new_clusters_init.append(clusters_init[idx])
+        for idx in range(len(merge_decisions)): 
+            new_clusters_init.append(0)
+        clusters_init = new_clusters_init
+
+    for k_idx in range(len(clusters_init)):
+        if clusters_init[k_idx] > max_init:
+            ks_to_delete.append(k_idx)
+    if len(ks_to_delete) > 0:
+        new_clusters_init = []
+        for idx in range(len(clusters_init)):
+            if not idx in ks_to_delete:
+                new_clusters_init.append(clusters_init[idx])
+        clusters_init = new_clusters_init
+
+    return ks_to_delete, clusters_init
+

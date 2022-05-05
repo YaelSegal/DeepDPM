@@ -365,6 +365,15 @@ def run_on_embeddings_hyperparams(parent_parser):
         "--gpus",
         default=None
     )
+    parser.add_argument(
+        "--perform_delete",
+        action="store_true"
+    )
+    parser.add_argument(
+        "--max_init",
+        default=10,
+        type=int
+    )
     return parser
 
 def best_cluster_fit(y_true, y_pred):
@@ -409,9 +418,11 @@ def train_cluster_net():
     if args.offline:
         logger = DummyLogger()
     else:
+        if not args.exp_name:
+            args.exp_name = args.dataset
         logger = NeptuneLogger(
-                api_key='your_API_token',
-                project_name='your_project_name',
+                api_key='eyJhcGlfYWRkcmVzcyI6Imh0dHBzOi8vYXBwLm5lcHR1bmUuYWkiLCJhcGlfdXJsIjoiaHR0cHM6Ly9hcHAubmVwdHVuZS5haSIsImFwaV9rZXkiOiI4ZGJkMjM4Ny1mNzY0LTQ4ODYtODU5Yi1kZWM3OTQ3ZTA4YjQifQ==',
+                project_name='yael/UNSUP-CLUSTERING',
                 experiment_name=args.exp_name,
                 params=vars(args),
                 tags=tags

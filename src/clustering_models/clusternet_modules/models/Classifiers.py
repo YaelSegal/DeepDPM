@@ -129,6 +129,26 @@ class MLP_Classifier(nn.Module):
 
             self.class_fc2 = class_fc2
 
+    def update_K_delete(self, delete_decisions):
+
+        self.k -= delete_decisions.sum().item()
+        print(f"delete_decisions:{delete_decisions}")
+        print(f"self.k:{self.k}")
+
+        with torch.no_grad():
+            class_fc2 = nn.Linear(self.last_dim, self.k)
+
+            # Adjust weights
+            weights_not_merged = self.class_fc2.weight.data[torch.logical_not(delete_decisions), :]
+
+            class_fc2.weight.data = weights_not_merged
+
+            # Adjust bias
+            bias_not_merged = self.class_fc2.bias.data[torch.logical_not(delete_decisions)]
+            class_fc2.bias.data = bias_not_merged
+
+            self.class_fc2 = class_fc2
+
     def _initalize_weights_split(self, weight, split_decisions, init_new_weight, subclusters_nets=None):
         if init_new_weight == "same":
             # just duplicate, can think of something more complex later
@@ -410,6 +430,45 @@ class Subclustering_net(nn.Module):
             self.class_fc2.to(device=self.device)
 
             del class_fc1, class_fc2
+
+    def update_K_delete(self, delete_decisions):
+        class_fc1 = self.class_fc1
+        class_fc2 = self.class_fc2
+        mus_ind_not_deleted = torch.nonzero(torch.logical_not(torch.tensor(delete_decisions)), as_tuple=False)
+        self.K -= delete_decisions.sum().item()
+            
+        print(f"delete_decisions:{delete_decisions}")
+        print(f"self.K:{self.K}")
+        with torch.no_grad():
+            self.class_fc1 = nn.Linear(self.codes_dim, self.hidden_dim * self.K)
+            self.class_fc2 = nn.Linear(self.hidden_dim * self.K, 2 * self.K)
+
+            # Adjust weights
+            fc1_weights_not_deleted = class_fc1.weight.data[torch.logical_not(torch.tensor(delete_decisions)).repeat_interleave(self.hidden_dim), :]
+            self.class_fc1.weight.data = fc1_weights_not_deleted
+
+            self.class_fc2.weight.data.fill_(0)
+            gradient_mask_fc2 = torch.zeros(self.hidden_dim * self.K, 2 * self.K)
+            for i, k in enumerate(mus_ind_not_deleted):
+                # i is the new index of the cluster and k is the old one
+                self.class_fc2.weight.data[2 * i: 2*(i + 1), self.hidden_dim * i: self.hidden_dim * (i+1)] =\
+                    class_fc2.weight.data[2 * k: 2*(k + 1), self.hidden_dim * k: self.hidden_dim * (k+1)]
+                gradient_mask_fc2[self.hidden_dim * i:self.hidden_dim * (i + 1), 2 * i: 2 * (i + 1)] = 1
+
+
+            self.class_fc2.weight.register_hook(lambda grad: grad.mul_(gradient_mask_fc2.T.to(device=self.device)))
+
+            # Adjust bias
+            fc1_bias_not_deleted = class_fc1.bias.data[torch.logical_not(delete_decisions).repeat_interleave(self.hidden_dim)]
+            fc2_bias_not_deleted = class_fc2.bias.data[torch.logical_not(delete_decisions).repeat_interleave(2)]
+
+            self.class_fc1.bias.data = fc1_bias_not_deleted
+            self.class_fc2.bias.data = fc2_bias_not_deleted
+            self.class_fc1.to(device=self.device)
+            self.class_fc2.to(device=self.device)
+
+            del class_fc1, class_fc2
+
 
     def _initalize_weights_split(self, weight, init_new_weight, num=2):
         if init_new_weight == "same":

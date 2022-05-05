@@ -298,6 +298,7 @@ def compute_covs(codes, logits, K, mus, use_priors=True, prior=None):
 
 def compute_mus_covs_pis_subclusters(codes, logits, logits_sub, mus_sub, K, n_sub, hard_assignment=True, use_priors=True, prior=None):
     pi_sub = compute_pi_k(logits_sub, prior=prior if use_priors else None)
+    init_idx = []
     if hard_assignment:
         mus_sub_new, covs_sub_new = [], []
         for k in range(K):
@@ -308,6 +309,9 @@ def compute_mus_covs_pis_subclusters(codes, logits, logits_sub, mus_sub, K, n_su
 
             if indices.sum() < 2 or denominator[0] == 0 or denominator[1] == 0 or len(torch.unique(r_sub.argmax(-1))) < n_sub:
                 # Empty subcluster encountered, re-initializing cluster {k}
+                if  denominator[0] == 0 or denominator[1] == 0:
+                    print("cluster {} reinitialize params".format(k))
+                    init_idx.append(k)
                 mus_sub, covs_sub, pi_sub_ = init_mus_and_covs_sub(codes=codes, k=k, n_sub=n_sub, logits=logits, logits_sub=logits_sub, how_to_init_mu_sub="kmeans_1d", prior=prior, use_priors=use_priors, device=codes.device)
                 pi_sub[2*k: 2*k+2] = pi_sub_
                 mus_sub_new.append(mus_sub[0])
@@ -341,7 +345,7 @@ def compute_mus_covs_pis_subclusters(codes, logits, logits_sub, mus_sub, K, n_su
         counts = pi_sub * len(codes)
         mus_sub_new = prior.compute_post_mus(counts, mus_sub_new)
     covs_sub_new = torch.stack(covs_sub_new)
-    return mus_sub_new, covs_sub_new, pi_sub
+    return mus_sub_new, covs_sub_new, pi_sub, init_idx
 
 
 def compute_mus_subclusters(codes, logits, logits_sub, pi_sub, mus_sub, K, n_sub, hard_assignment=True, use_priors=True, prior=None):
